@@ -1,9 +1,7 @@
 package main
 
 import (
-	"fmt"
 	"github.com/nickstenning/router/triemux"
-	"labix.org/v2/mgo"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -13,9 +11,8 @@ import (
 // Router is a wrapper around an HTTP multiplexer (trie.Mux) which retrieves its
 // routes from a passed mongo database.
 type Router struct {
-	mux         *triemux.Mux
-	mongoUrl    string
-	mongoDbName string
+	mux  *triemux.Mux
+	stor Storage
 }
 
 type Application struct {
@@ -31,11 +28,10 @@ type Route struct {
 
 // NewRouter returns a new empty router instance. You will still need to call
 // ReloadRoutes() to do the initial route load.
-func NewRouter(mongoUrl, mongoDbName string) *Router {
+func NewRouter(stor Storage) *Router {
 	return &Router{
-		mux:         triemux.NewMux(),
-		mongoUrl:    mongoUrl,
-		mongoDbName: mongoDbName,
+		mux:  triemux.NewMux(),
+		stor: stor,
 	}
 }
 
@@ -59,21 +55,18 @@ func (rt *Router) ReloadRoutes() {
 		}
 	}()
 
-	log.Println("mgo: connecting to", rt.mongoUrl)
-	sess, err := mgo.Dial(rt.mongoUrl)
+	log.Println("connecting to storage")
+	err := rt.stor.Open()
 	if err != nil {
-		panic(fmt.Sprintln("mgo:", err))
+		panic(err)
 	}
-	defer sess.Close()
-	sess.SetMode(mgo.Monotonic, true)
-
-	db := sess.DB(rt.mongoDbName)
+	defer rt.stor.Close()
 
 	log.Printf("router: reloading routes")
 	newmux := triemux.NewMux()
 
-	apps := loadApplications(db.C("applications"), newmux)
-	loadRoutes(db.C("routes"), newmux, apps)
+	apps := loadApplications(rt.stor)
+	loadRoutes(rt.stor, newmux, apps)
 
 	rt.mux = newmux
 	log.Printf("router: reloaded routes")
@@ -82,11 +75,15 @@ func (rt *Router) ReloadRoutes() {
 // loadApplications is a helper function which loads applications from the
 // passed mongo collection and registers them as backends with the passed proxy
 // mux.
-func loadApplications(c *mgo.Collection, mux *triemux.Mux) (apps map[string]http.Handler) {
+func loadApplications(stor Storage) (apps map[string]http.Handler) {
 	app := &Application{}
 	apps = make(map[string]http.Handler)
 
-	iter := c.Find(nil).Iter()
+	iter, err := stor.Applications()
+
+	if err != nil {
+		panic(err)
+	}
 
 	for iter.Next(&app) {
 		backendUrl, err := url.Parse(app.BackendURL)
@@ -113,10 +110,14 @@ func loadApplications(c *mgo.Collection, mux *triemux.Mux) (apps map[string]http
 
 // loadRoutes is a helper function which loads routes from the passed mongo
 // collection and registers them with the passed proxy mux.
-func loadRoutes(c *mgo.Collection, mux *triemux.Mux, apps map[string]http.Handler) {
+func loadRoutes(stor Storage, mux *triemux.Mux, apps map[string]http.Handler) {
 	route := &Route{}
 
-	iter := c.Find(nil).Iter()
+	iter, err := stor.Routes()
+
+	if err != nil {
+		panic(err)
+	}
 
 	for iter.Next(&route) {
 		handler, ok := apps[route.ApplicationId]

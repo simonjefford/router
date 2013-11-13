@@ -20,7 +20,7 @@ func main() {
 
 	flag.Parse()
 
-	rout := NewRouter(*mongoUrl, *mongoDbName)
+	rout := NewRouter(NewMongoStorage(*mongoUrl, *mongoDbName))
 	rout.ReloadRoutes()
 
 	log.Println("router: listening for requests on " + *pubAddr)
